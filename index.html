@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>لبيب من آرت تك</title>
+<style>
+  :root { --red: #e3191e; --ink: #111; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #f4f1ec; font-family: Tahoma, "Segoe UI", sans-serif; touch-action: none; }
+  #cam { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; display: none; }
+  #three, #ar { position: fixed; inset: 0; }
+  #ar video { object-fit: cover; }
+  #start { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 14px; padding: 0 24px 56px; background: linear-gradient(transparent 40%, rgba(244,241,236,.95) 75%); z-index: 3; }
+  #start h1 { margin: 0; font-size: 30px; color: var(--ink); }
+  #start p { margin: 0; color: #444; text-align: center; font-size: 15px; }
+  button { font: inherit; border: 3px solid var(--ink); border-radius: 999px; padding: 14px 30px; font-size: 19px; font-weight: bold; cursor: pointer; }
+  .go { background: var(--red); color: #fff; box-shadow: 0 5px 0 var(--ink); }
+  .go:active { transform: translateY(4px); box-shadow: 0 1px 0 var(--ink); }
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; display: none; flex-direction: column; align-items: center; gap: 10px; padding: 0 16px 28px; z-index: 2; }
+  #status { background: rgba(17,17,17,.82); color: #fff; padding: 8px 18px; border-radius: 999px; font-size: 15px; }
+  #status b { color: #ff5a5f; }
+  #line { max-width: 92%; background: #fff; border: 3px solid var(--ink); border-radius: 18px; padding: 10px 14px; font-size: 16px; line-height: 1.5; display: none; }
+  .end { background: #fff; color: var(--ink); padding: 10px 22px; font-size: 16px; }
+  #hint { position: fixed; top: 14px; padding: 0 16px; left: 0; right: 0; text-align: center; color: #fff; text-shadow: 0 1px 3px #000; font-size: 13px; display: none; z-index: 2; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<video id="cam" playsinline muted autoplay></video>
+<div id="three"></div>
+<div id="ar"></div>
+<div id="overlay">
+<div id="hint">اسحب عشان تلفّه • قرّب بصباعين عشان تكبّره</div>
+<div id="start">
+  <h1>لبيب</h1>
+  <p>حط كارت آرت تك قدامك، وافتح الكاميرا والمايك، وكلّم لبيب بالمصري</p>
+  <button class="go" id="go">يلا نبدأ</button>
+</div>
+<div id="bar">
+  <div id="line"></div>
+  <div id="status">جاري الاتصال…</div>
+  <button class="end" id="end">إنهاء</button>
+</div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+
+const AGENT_ID = 'agent_4701m6xwfq4ee3w86dqcd90hwqp3';
+const RED = 0xe3191e, BLACK = 0x1a1a1c, WHITE = 0xffffff;
+
+// ---------- renderer / scene ----------
+const host = document.getElementById('three');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+host.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.05, 50);
+camera.position.set(0, 0.62, 3.1);
+camera.lookAt(0, 0.5, 0);
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8078, 1.6));
+const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(1.5, 3, 2.5); scene.add(key);
+
+// cartoon look: 3-step toon ramp + inverted-hull outline
+const ramp = new THREE.DataTexture(new Uint8Array([90, 90, 90, 255, 190, 190, 190, 255, 255, 255, 255, 255]), 3, 1);
+ramp.minFilter = ramp.magFilter = THREE.NearestFilter; ramp.needsUpdate = true;
+const mats = {};
+const toon = c => mats[c] ??= new THREE.MeshToonMaterial({ color: c, gradientMap: ramp });
+const outlineMat = new THREE.MeshBasicMaterial({ color: 0x0b0b0b, side: THREE.BackSide });
+outlineMat.onBeforeCompile = s => {
+  s.vertexShader = s.vertexShader.replace('#include <begin_vertex>', 'vec3 transformed = position + normal * 0.012;');
+};
+function part(geo, color, parent, pos = [0, 0, 0], rot = [0, 0, 0], scl = [1, 1, 1], outline = true) {
+  const m = new THREE.Mesh(geo, toon(color));
+  m.position.set(...pos); m.rotation.set(...rot); m.scale.set(...scl);
+  if (outline) m.add(new THREE.Mesh(geo, outlineMat));
+  parent.add(m); return m;
+}
+const rbox = (w, h, d, r) => new RoundedBoxGeometry(w, h, d, 5, r);
+const capsule = (r, l) => new THREE.CapsuleGeometry(r, l, 6, 16);
+
+function logoTexture(withWord = false) {
+  const c = document.createElement('canvas'); c.width = 256; c.height = 128;
+  const g = c.getContext('2d');
+  g.font = 'italic 900 104px Arial Black, Arial, sans-serif'; g.textBaseline = 'middle'; g.textAlign = 'center';
+  if (withWord) { g.font = '700 54px Arial, sans-serif'; g.fillStyle = '#fff'; g.fillText('ARTTECH', 128, 64); }
+  else { g.fillStyle = '#fff'; g.fillText('A', 104, 68); g.fillStyle = '#e3191e'; g.fillText('T', 160, 68); }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const decal = (tex, w, h) => new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
+
+// ---------- Labib ----------
+const labib = new THREE.Group(); scene.add(labib);
+const body = new THREE.Group(); labib.add(body);
+
+// shadow
+const sh = new THREE.Mesh(new THREE.CircleGeometry(0.36, 40), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.22 }));
+sh.rotation.x = -Math.PI / 2; sh.scale.set(1, 0.55, 1); sh.position.y = 0.002; labib.add(sh);
+
+// legs + sneakers
+const legs = [];
+for (const s of [-1, 1]) {
+  const hip = new THREE.Group(); hip.position.set(0.085 * s, 0.3, 0); body.add(hip);
+  part(capsule(0.065, 0.16), BLACK, hip, [0, -0.12, 0]);
+  part(new THREE.BoxGeometry(0.012, 0.2, 0.03), RED, hip, [0.066 * s, -0.12, 0], [0, 0, 0], [1, 1, 1], false);
+  const shoe = new THREE.Group(); shoe.position.set(0, -0.27, 0.03); hip.add(shoe);
+  part(rbox(0.14, 0.085, 0.22, 0.04), WHITE, shoe);
+  part(rbox(0.145, 0.03, 0.225, 0.012), RED, shoe, [0, -0.04, 0], [0, 0, 0], [1, 1, 1], false);
+  part(rbox(0.09, 0.03, 0.08, 0.012), BLACK, shoe, [0, 0.04, 0.04], [0, 0, 0], [1, 1, 1], false);
+  legs.push(hip);
+}
+
+// torso (hoodie)
+const torso = new THREE.Group(); torso.position.y = 0.33; body.add(torso);
+part(rbox(0.36, 0.3, 0.24, 0.09), BLACK, torso, [0, 0.13, 0]);
+part(rbox(0.38, 0.05, 0.25, 0.025), BLACK, torso, [0, 0.0, 0]);                       // waistband
+part(new THREE.TorusGeometry(0.11, 0.045, 12, 28), RED, torso, [0, 0.28, 0.02], [Math.PI / 2 - 0.25, 0, 0]); // hood lining
+for (const s of [-1, 1]) {                                                              // drawstrings
+  part(new THREE.CylinderGeometry(0.008, 0.008, 0.09), RED, torso, [0.035 * s, 0.2, 0.125], [0, 0, 0], [1, 1, 1], false);
+  part(new THREE.SphereGeometry(0.014, 10, 8), WHITE, torso, [0.035 * s, 0.15, 0.125]);
+}
+const chestLogo = decal(logoTexture(), 0.14, 0.07); chestLogo.position.set(0, 0.1, 0.122); torso.add(chestLogo);
+const backWord = decal(logoTexture(true), 0.2, 0.1); backWord.position.set(0, 0.16, -0.122); backWord.rotation.y = Math.PI; torso.add(backWord);
+
+// arms
+const arms = [];
+for (const s of [-1, 1]) {
+  const sh = new THREE.Group(); sh.position.set(0.2 * s, 0.24, 0); torso.add(sh);
+  part(capsule(0.05, 0.12), BLACK, sh, [0, -0.09, 0]);
+  part(new THREE.CylinderGeometry(0.053, 0.053, 0.025, 16), RED, sh, [0, -0.17, 0], [0, 0, 0], [1, 1, 1], false);
+  part(new THREE.SphereGeometry(0.052, 16, 12), WHITE, sh, [0, -0.215, 0]);
+  sh.rotation.z = 0.18 * s;
+  arms.push(sh);
+}
+
+// head
+const head = new THREE.Group(); head.position.set(0, 0.66, 0); torso.add(head); head.position.y = 0.32 + 0.2;
+part(rbox(0.6, 0.5, 0.5, 0.17), BLACK, head);
+const screen = part(rbox(0.5, 0.3, 0.06, 0.05), WHITE, head, [0, -0.04, 0.235]);           // face screen
+for (const s of [-1, 1]) {
+  // horn-ears
+  const ear = new THREE.Group(); ear.position.set(0.22 * s, 0.22, -0.02); ear.rotation.z = -0.38 * s; head.add(ear);
+  part(new THREE.ConeGeometry(0.075, 0.2, 4), BLACK, ear, [0, 0.07, 0], [0, Math.PI / 4, 0]);
+  part(new THREE.ConeGeometry(0.035, 0.13, 4), RED, ear, [0, 0.05, 0.05], [0, Math.PI / 4, 0], [1, 1, 0.5], false);
+  // headphones
+  const cup = new THREE.Group(); cup.position.set(0.31 * s, -0.02, 0); cup.rotation.z = Math.PI / 2; head.add(cup);
+  part(new THREE.CylinderGeometry(0.13, 0.13, 0.08, 28), WHITE, cup);
+  part(new THREE.CylinderGeometry(0.085, 0.085, 0.085, 28), RED, cup, [0, -0.006 * s, 0], [0, 0, 0], [1, 1, 1], false);
+  part(new THREE.CylinderGeometry(0.05, 0.05, 0.09, 24), WHITE, cup, [0, -0.008 * s, 0], [0, 0, 0], [1, 1, 1], false);
+}
+const headLogo = decal(logoTexture(), 0.16, 0.08); headLogo.position.set(0, 0.17, 0.252); head.add(headLogo);
+
+// face: eyes with lids, mouth
+const face = new THREE.Group(); face.position.set(0, -0.04, 0.268); head.add(face);
+const ink = new THREE.MeshBasicMaterial({ color: 0x0b0b0b });
+const lidMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+const eyes = [], lids = [];
+for (const s of [-1, 1]) {
+  const e = new THREE.Mesh(new THREE.CircleGeometry(0.056, 32), ink);
+  e.position.set(0.105 * s, 0.01, 0); e.scale.set(0.85, 1.15, 1); face.add(e); eyes.push(e);
+  const lid = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.09), lidMat);
+  lid.position.set(0.105 * s, 0.1, 0.002); face.add(lid); lids.push(lid);
+  const line = new THREE.Mesh(new THREE.PlaneGeometry(0.11, 0.012), ink); line.position.y = -0.045; lid.add(line);
+}
+const mouth = new THREE.Mesh(new THREE.CircleGeometry(0.03, 32), ink);
+mouth.position.set(0, -0.075, 0.001); face.add(mouth);
+const tongue = new THREE.Mesh(new THREE.CircleGeometry(0.018, 24), new THREE.MeshBasicMaterial({ color: RED }));
+tongue.position.set(0, -0.012, 0.001); mouth.add(tongue);
+
+// ---------- expressions: extra face pieces swapped in per mood ----------
+const redInk = new THREE.MeshBasicMaterial({ color: RED });
+function shapeMesh(shape, mat, s) { const m = new THREE.Mesh(new THREE.ShapeGeometry(shape), mat); m.scale.setScalar(s); return m; }
+const star = new THREE.Shape(); for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4 + Math.PI / 2, r = i % 2 ? 0.38 : 1; star[i ? 'lineTo' : 'moveTo'](Math.cos(a) * r, Math.sin(a) * r); }
+const heart = new THREE.Shape(); heart.moveTo(0, -0.9); heart.bezierCurveTo(-1.2, -0.1, -0.9, 0.9, 0, 0.45); heart.bezierCurveTo(0.9, 0.9, 1.2, -0.1, 0, -0.9);
+const kit = { arcs: [], stars: [], hearts: [], brows: [] };
+for (const s of [-1, 1]) {
+  const arc = new THREE.Mesh(new THREE.TorusGeometry(0.04, 0.011, 8, 24, Math.PI), ink); arc.position.set(0.105 * s, 0.0, 0.003); face.add(arc); kit.arcs.push(arc);
+  const st = shapeMesh(star, redInk, 0.065); st.position.set(0.105 * s, 0.01, 0.003); face.add(st); kit.stars.push(st);
+  const ht = shapeMesh(heart, redInk, 0.055); ht.position.set(0.105 * s, 0.01, 0.003); face.add(ht); kit.hearts.push(ht);
+  const br = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.02), ink); br.position.set(0.1 * s, 0.085, 0.004); face.add(br); kit.brows.push(br);
+}
+kit.smile = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.009, 8, 24, Math.PI), ink); kit.smile.rotation.z = Math.PI; kit.smile.position.set(0, -0.06, 0.003); face.add(kit.smile);
+kit.frown = new THREE.Mesh(new THREE.TorusGeometry(0.03, 0.009, 8, 24, Math.PI), ink); kit.frown.position.set(0, -0.1, 0.003); face.add(kit.frown);
+kit.glasses = new THREE.Group(); face.add(kit.glasses); kit.glasses.position.z = 0.006;
+for (const s of [-1, 1]) { const g = new THREE.Mesh(rbox(0.13, 0.075, 0.01, 0.025), ink); g.position.set(0.1 * s, 0.015, 0); kit.glasses.add(g); }
+{ const bridge = new THREE.Mesh(new THREE.PlaneGeometry(0.08, 0.015), ink); bridge.position.y = 0.03; kit.glasses.add(bridge); }
+const screenMat = screen.material = screen.material.clone();
+const SCREEN_WHITE = new THREE.Color(WHITE), SCREEN_ANGRY = new THREE.Color(0xff8a80);
+
+// smoke puffs for when he gets mad
+const puffs = [];
+const puffMat = new THREE.MeshToonMaterial({ color: 0x5a5a5a, gradientMap: ramp, transparent: true });
+for (let i = 0; i < 14; i++) { const p = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 8), puffMat.clone()); p.visible = false; head.add(p); puffs.push({ m: p, age: 9 }); }
+let puffClock = 0;
+function emitSmoke(dt) {
+  puffClock -= dt;
+  if (puffClock <= 0) {
+    puffClock = 0.09;
+    const p = puffs.find(p => p.age > 1.2); if (!p) return;
+    const s = Math.random() < 0.5 ? -1 : 1;
+    p.age = 0; p.m.visible = true; p.m.position.set(0.24 * s, 0.3, -0.02); p.vx = s * (0.1 + Math.random() * 0.1);
+  }
+}
+function updateSmoke(dt) {
+  for (const p of puffs) {
+    if (p.age > 1.2) { p.m.visible = false; continue; }
+    p.age += dt; p.m.position.y += dt * 0.35; p.m.position.x += p.vx * dt;
+    p.m.scale.setScalar(0.6 + p.age * 1.4); p.m.material.opacity = Math.max(0, 0.85 - p.age * 0.7);
+  }
+}
+
+let mood = 'happy', moodUntil = 0;     // the agent or pokes set this; falls back to happy
+function setMood(m, secs = 6) { mood = m; moodUntil = clock.elapsedTime + secs; }
+
+const CARD_SIZE = 0.45;   // Labib's height as a share of the printed card's width
+
+// ---------- preview mode: drag to turn, pinch to scale ----------
+let yaw = 0, scaleK = 1; const pts = new Map(); let pinch0 = 0, scale0 = 1;
+host.addEventListener('pointerdown', e => { pts.set(e.pointerId, [e.clientX, e.clientY]); host.setPointerCapture(e.pointerId); if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch0 = Math.hypot(a[0] - b[0], a[1] - b[1]); scale0 = scaleK; } });
+host.addEventListener('pointermove', e => {
+  if (!pts.has(e.pointerId) || onCard) return;
+  const prev = pts.get(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]);
+  if (pts.size === 1) yaw += (e.clientX - prev[0]) * 0.01;
+  else if (pts.size === 2) { const [a, b] = [...pts.values()]; scaleK = THREE.MathUtils.clamp(scale0 * Math.hypot(a[0] - b[0], a[1] - b[1]) / pinch0, 0.4, 2.5); }
+});
+const up = e => pts.delete(e.pointerId);
+host.addEventListener('pointerup', up); host.addEventListener('pointercancel', up);
+host.addEventListener('wheel', e => { scaleK = THREE.MathUtils.clamp(scaleK * (e.deltaY < 0 ? 1.08 : 0.93), 0.4, 2.5); });
+
+// ---------- on the card: stand, stroll around it, face whoever is talking ----------
+let onCard = false, arCam = null, seen = false;
+const stage = new THREE.Group();            // card-local space with +Y pointing up out of the card
+stage.rotation.x = Math.PI / 2;
+const target = new THREE.Vector3(); let hasTarget = false, walking = 0, nextWander = 3;
+const tmpV = new THREE.Vector3(), camLocal = new THREE.Vector3();
+
+function wander(t) {
+  if (mode === 'speaking' || hasTarget || t < nextWander) return;
+  nextWander = t + 5 + Math.random() * 6;
+  // stay on the card: it is 1 wide and ~0.57 deep
+  target.set((Math.random() - 0.5) * 0.6, 0, (Math.random() - 0.5) * 0.28);
+  if (target.distanceTo(labib.position) > 0.12) hasTarget = true;
+}
+function turnToward(angle, k) {
+  let d = angle - labib.rotation.y; d = Math.atan2(Math.sin(d), Math.cos(d));
+  labib.rotation.y += d * k;
+}
+
+// ---------- animation ----------
+let mode = 'idle';     // idle | listening | speaking
+let poke = 0, talk = 0, wave = 0, appear = 0, nextBlink = 1.5, blinkT = -1, stride = 0;
+let getVol = () => 0;
+let draw = () => renderer.render(scene, camera);
+const clock = new THREE.Clock();
+function frame() {
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
+
+  appear = Math.min(1, appear + dt * 1.6);
+  const pop = appear < 1 ? 1 - Math.pow(1 - appear, 3) * Math.cos(appear * 9) : 1;
+  labib.scale.setScalar((onCard ? CARD_SIZE : scaleK) * pop);
+
+  if (onCard && seen) {
+    wander(t);
+    if (hasTarget) {
+      tmpV.subVectors(target, labib.position); tmpV.y = 0;
+      const dist = tmpV.length();
+      turnToward(Math.atan2(tmpV.x, tmpV.z), 0.12);
+      if (dist < 0.01) hasTarget = false;
+      else labib.position.addScaledVector(tmpV.normalize(), Math.min(dist, 0.16 * dt));
+    } else {
+      stage.updateMatrixWorld(); camLocal.copy(arCam.position); stage.worldToLocal(camLocal);
+      turnToward(Math.atan2(camLocal.x - labib.position.x, camLocal.z - labib.position.z), 0.08);   // look at you
+    }
+  } else if (!onCard) labib.rotation.y += (yaw - labib.rotation.y) * 0.2;
+
+  walking += ((hasTarget ? 1 : 0) - walking) * 0.15;
+  if (walking > 0.01) stride += dt * 9;
+  const step = Math.sin(stride) * walking;
+
+  const vol = THREE.MathUtils.clamp(getVol() * 2.6, 0, 1);
+  talk += (vol - talk) * 0.45;
+  body.position.y = (Math.abs(Math.sin(t * 2.2)) * 0.012 + talk * 0.01) * (1 - walking) + Math.abs(Math.cos(stride)) * 0.035 * walking;
+  body.rotation.z = step * 0.06;
+  torso.scale.y = 1 + Math.sin(t * 2.2) * 0.012;
+  head.rotation.z = Math.sin(t * 0.9) * 0.05 + (mode === 'listening' ? 0.12 : 0);
+  head.rotation.x = -talk * 0.12 + Math.sin(t * 1.3) * 0.02;
+  head.rotation.y = Math.sin(t * 0.6) * 0.08 * (1 - walking);
+
+  // arms: wave on hello, gesture while speaking, swing while walking
+  wave = Math.max(0, wave - dt * 0.4);
+  arms[1].rotation.z = 0.18 + (wave > 0 ? 2.5 + Math.sin(t * 12) * 0.35 : talk * 0.5);
+  arms[1].rotation.x = (mode === 'speaking' ? -talk * 0.6 : 0) + step * 0.7;
+  arms[0].rotation.z = -0.18 - (mode === 'listening' ? 0.25 : talk * 0.3);
+  arms[0].rotation.x = -step * 0.7;
+  legs[0].rotation.x = Math.sin(t * 2.2) * 0.02 * (1 - walking) + step * 0.6;
+  legs[1].rotation.x = -legs[0].rotation.x;
+
+  // face: pick the pieces for the current mood
+  if (t > moodUntil) mood = 'happy';
+  const m = mood, angry = m === 'angry';
+  if (t > nextBlink) { blinkT = 0; nextBlink = t + 2 + Math.random() * 3; }
+  let blink = 0; if (blinkT >= 0) { blinkT += dt; blink = Math.sin(Math.min(1, blinkT / 0.16) * Math.PI); if (blinkT > 0.16) blinkT = -1; }
+  const dotEyes = ['happy', 'surprised', 'thinking', 'sad', 'angry'].includes(m);
+  for (let i = 0; i < 2; i++) {
+    const s = i ? 1 : -1;
+    eyes[i].visible = dotEyes;
+    eyes[i].scale.set(m === 'surprised' ? 1.25 : 0.85, (m === 'surprised' ? 1.4 : mode === 'listening' ? 1.25 : 1.1), 1);
+    eyes[i].position.x = 0.105 * s + (m === 'thinking' ? 0.025 : 0);
+    eyes[i].position.y = 0.01 + (m === 'thinking' ? 0.02 : 0);
+    const lidDown = m === 'sad' ? 0.35 : m === 'angry' ? 0.3 : m === 'thinking' && i === 0 ? 0.4 : 0;
+    lids[i].visible = dotEyes && (lidDown > 0 || blink > 0.02);
+    lids[i].position.y = 0.1 - Math.max(lidDown, blink) * 0.09;
+    lids[i].rotation.z = m === 'sad' ? -0.35 * s : m === 'angry' ? 0.4 * s : 0;
+    kit.arcs[i].visible = m === 'laugh';
+    kit.arcs[i].scale.y = 1 - blink * 0.6;
+    kit.stars[i].visible = m === 'excited';
+    kit.stars[i].rotation.z = t * 2 * s; kit.stars[i].scale.setScalar(0.065 * (1 + Math.sin(t * 10) * 0.12));
+    kit.hearts[i].visible = m === 'love';
+    kit.hearts[i].scale.setScalar(0.055 * (1 + Math.abs(Math.sin(t * 6)) * 0.25));
+    kit.brows[i].visible = angry || m === 'sad';
+    kit.brows[i].rotation.z = angry ? -0.45 * s : 0.3 * s;
+    kit.brows[i].position.y = angry ? 0.075 : 0.095;
+  }
+  kit.glasses.visible = m === 'cool';
+  // mouth: open with the voice; otherwise a smile, a frown or an "o"
+  const quiet = talk < 0.08;
+  const smiley = ['happy', 'laugh', 'excited', 'love', 'cool'].includes(m);
+  kit.smile.visible = quiet && smiley;
+  kit.smile.scale.setScalar(m === 'laugh' || m === 'excited' ? 1.35 : 1);
+  kit.frown.visible = quiet && (m === 'sad' || angry);
+  mouth.visible = !kit.smile.visible && !kit.frown.visible;
+  const laughOpen = m === 'laugh' ? 0.5 + Math.abs(Math.sin(t * 14)) * 0.5 : 0;
+  mouth.scale.set(0.8 + talk * 0.5 + (m === 'surprised' ? 0.3 : 0), Math.max(0.15 + talk * 1.6, m === 'surprised' ? 1.1 : 0, laughOpen * 1.4), 1);
+  tongue.visible = talk > 0.35 || laughOpen > 0.7;
+  screenMat.color.lerp(angry ? SCREEN_ANGRY : SCREEN_WHITE, 0.1); lidMat.color.copy(screenMat.color);
+  if (angry) { emitSmoke(dt); head.position.x = Math.sin(t * 60) * 0.006; } else head.position.x = 0;
+  updateSmoke(dt);
+  // thinking: hand to chin; laughing: shake
+  if (m === 'thinking' && !walking) { arms[1].rotation.z = -0.6; arms[1].rotation.x = -1.9; head.rotation.z += 0.15; }
+  if (m === 'laugh') body.position.y += Math.abs(Math.sin(t * 14)) * 0.015;
+  // poke squash
+  poke = Math.max(0, poke - dt * 4);
+  body.scale.set(1 + poke * 0.12, 1 - poke * 0.15, 1 + poke * 0.12);
+  draw();
+}
+renderer.setAnimationLoop(frame);
+
+// ---------- poke him: giggles first, then gets mad and fumes ----------
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+let pokes = [], angryTold = -99;
+addEventListener('pointerdown', e => {
+  if (e.target.closest('button') || !labib.visible) return;
+  ndc.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, onCard ? arCam : camera);
+  if (!ray.intersectObject(labib, true).length) return;
+  const t = clock.elapsedTime;
+  poke = 1; pokes = pokes.filter(x => t - x < 4); pokes.push(t);
+  if (pokes.length >= 5) {
+    setMood('angry', 5);
+    if (t - angryTold > 8) { angryTold = t; conv?.sendUserMessage(`(المستخدم بيزقّ لبيب على الشاشة ${pokes.length} مرات ورا بعض)`); }
+  } else if (pokes.length >= 3) setMood('surprised', 1.5);
+  else setMood('laugh', 1.2);
+});
+
+// ---------- start: card tracking + conversation ----------
+const $ = id => document.getElementById(id);
+const statusEl = $('status'), lineEl = $('line'), hintEl = $('hint');
+let conv = null;
+
+async function startCard() {
+  const { MindARThree } = await import('mindar-image-three');
+  const mind = new MindARThree({ container: $('ar'), imageTargetSrc: './card.mind', uiScanning: 'no', uiLoading: 'no', filterMinCF: 0.0001, filterBeta: 0.001 });
+  const anchor = mind.addAnchor(0);
+  mind.scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8078, 1.6));
+  const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(1, 2, 3); mind.scene.add(sun);
+  labib.position.set(0, 0, 0); labib.rotation.y = 0;
+  stage.add(labib); anchor.group.add(stage);
+  anchor.onTargetFound = () => {
+    if (!seen) { seen = true; appear = 0; wave = 2.2; startTalk(); }
+    hintEl.style.display = 'none';
+  };
+  anchor.onTargetLost = () => { hintEl.textContent = 'وجّه الكاميرا على الكارت تاني'; hintEl.style.display = 'block'; };
+  await mind.start();
+  mind.renderer.outputColorSpace = THREE.SRGBColorSpace;
+  arCam = mind.camera; onCard = true;
+  renderer.setAnimationLoop(null); renderer.domElement.style.display = 'none';
+  draw = () => mind.renderer.render(mind.scene, mind.camera);
+  mind.renderer.setAnimationLoop(frame);
+  document.body.style.background = '#000';
+}
+
+async function startTalk() {
+  if (conv) return;
+  statusEl.textContent = 'جاري الاتصال…';
+  try {
+    const { Conversation } = await import('https://cdn.jsdelivr.net/npm/@elevenlabs/client@1.31.0/+esm');
+    conv = await Conversation.startSession({
+      agentId: AGENT_ID,
+      connectionType: 'websocket',
+      clientTools: { set_expression: ({ emotion }) => { if (mood !== 'angry' || emotion === 'angry') setMood(emotion, 7); return 'ok'; } },
+      onConnect: () => { statusEl.innerHTML = '<b>●</b> لبيب معاك'; },
+      onDisconnect: () => { statusEl.textContent = 'المكالمة خلصت'; mode = 'idle'; getVol = () => 0; },
+      onError: (m) => { statusEl.textContent = 'حصلت مشكلة في الاتصال'; console.error(m); },
+      onModeChange: ({ mode: m }) => {
+        mode = m === 'speaking' ? 'speaking' : 'listening';
+        if (mode === 'speaking') hasTarget = false;               // stop and talk to you
+        statusEl.innerHTML = m === 'speaking' ? '<b>●</b> لبيب بيتكلم…' : '<b>●</b> لبيب بيسمعك… اتكلم';
+      },
+      onMessage: ({ message, source, role }) => {
+        if ((source ?? role) === 'ai' || role === 'agent') { lineEl.textContent = message; lineEl.style.display = 'block'; }
+      },
+    });
+    getVol = () => conv.getOutputVolume();
+  } catch (e) {
+    console.error(e);
+    statusEl.textContent = e?.name === 'NotAllowedError' ? 'محتاج إذن المايك عشان تكلم لبيب' : 'معرفتش أوصل للبيب، جرّب تاني';
+  }
+}
+
+$('go').onclick = async () => {
+  $('start').style.display = 'none'; $('bar').style.display = 'flex';
+  hintEl.textContent = 'حط الكارت على المكتب أو الأرض ووجّه الكاميرا عليه'; hintEl.style.display = 'block';
+  statusEl.textContent = 'دوّر على الكارت…';
+  try { await startCard(); }
+  catch (e) {
+    console.error(e);
+    hintEl.textContent = 'الكاميرا مش شغالة، فلبيب هيكلمك هنا'; appear = 0; wave = 2.2; startTalk();
+  }
+};
+$('end').onclick = async () => {
+  if (conv) { await conv.endSession(); conv = null; }
+  $('end').textContent = 'كلّمه تاني';
+  $('end').onclick = () => location.reload();
+};
+</script>
+</body>
+</html>
